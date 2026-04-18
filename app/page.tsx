@@ -140,20 +140,6 @@ export default function Home() {
     setTimeout(() => setCopyHint(null), 3000);
   }, [filtered]);
 
-  const onCopyRow = useCallback(async (row: InventoryRow) => {
-    const cells = [
-      row.referencia,
-      row.nombreReferencia,
-      row.plu,
-      row.precio,
-      row.talla,
-      row.imagen,
-    ];
-    const ok = await copyText(cells.join("\t"));
-    setCopyHint(ok ? "Fila copiada (TSV)." : "No se pudo copiar.");
-    setTimeout(() => setCopyHint(null), 3000);
-  }, []);
-
   const onCopyTableTsv = useCallback(async () => {
     const header = [
       "Referencia",
@@ -253,7 +239,6 @@ export default function Home() {
                 <th>Precio</th>
                 <th>Talla</th>
                 <th>Imagen</th>
-                <th className="col-copy">Copiar</th>
               </tr>
             </thead>
             <tbody>
@@ -274,15 +259,6 @@ export default function Home() {
                     ) : (
                       "—"
                     )}
-                  </td>
-                  <td className="col-copy">
-                    <button
-                      type="button"
-                      className="btn tiny"
-                      onClick={() => void onCopyRow(row)}
-                    >
-                      Fila
-                    </button>
                   </td>
                 </tr>
               ))}
