@@ -112,11 +112,6 @@ body {
   border-color: var(--primary-hover);
 }
 
-.btn.tiny {
-  font-size: 0.8rem;
-  padding: 0.2rem 0.45rem;
-}
-
 .search-block label {
   display: block;
   font-weight: 600;
