@@ -4,6 +4,9 @@ import { normalizeInventoryPayload } from "@/lib/normalizeInventory";
 
 export const runtime = "nodejs";
 
+/** Evita que Vercel corte la función antes de que termine el GET al API (lista grande). */
+export const maxDuration = 60;
+
 const DEFAULT_URL =
   "https://apiservices.lineadirectaec.com/APiPalet/api/Admin/ListSaldosBodegaMaestra";
 

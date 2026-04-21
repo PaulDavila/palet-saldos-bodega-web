@@ -99,27 +99,43 @@ export default function Home() {
     setLoading(true);
     setApiError(null);
     try {
-      clearStorageCache();
       const res = await fetch("/api/inventario", { cache: "no-store" });
       let data: { items?: InventoryRow[]; error?: string };
       try {
         data = (await res.json()) as { items?: InventoryRow[]; error?: string };
       } catch {
-        setApiError("Respuesta inválida (no JSON)");
+        setApiError("Respuesta inválida (no JSON). Revise en Vercel que la función no haya cortado por tiempo.");
         return;
       }
       if (!res.ok) {
-        setApiError(data.error || `Error HTTP ${res.status}`);
+        setApiError(
+          data.error ||
+            `Error HTTP ${res.status}. Compruebe variables de entorno en Vercel (usuario, contraseña, INVENTORY_TLS_INSECURE=1).`
+        );
         return;
       }
       if (!data.items || !Array.isArray(data.items)) {
         setApiError("Respuesta inválida del servidor");
         return;
       }
-      saveToStorage(data.items);
+      try {
+        saveToStorage(data.items);
+      } catch (storeErr) {
+        const name =
+          storeErr instanceof DOMException ? storeErr.name : "Error";
+        const detail =
+          storeErr instanceof Error ? storeErr.message : String(storeErr);
+        setApiError(
+          `Los datos llegaron del servidor pero no se pudieron guardar en el navegador (${name}: ${detail}). Suele ser caché llena: borre datos de este sitio o use otro navegador.`
+        );
+        return;
+      }
       setApiError(null);
-    } catch {
-      setApiError("No se pudo conectar con el servidor");
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      setApiError(
+        `Fallo al llamar a /api/inventario: ${detail}. Si Postman funciona, revise timeout en Vercel, extensiones del navegador o la consola (F12) → pestaña Red.`
+      );
     } finally {
       setLoading(false);
     }
