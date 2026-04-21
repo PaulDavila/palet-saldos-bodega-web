@@ -1,78 +1,9 @@
 "use client";
 
-import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { InventoryRow } from "@/lib/inventoryTypes";
 
-const STORAGE_KEY = "inventario_saldos_v1";
-const CACHE_EVENT = "inventory-cache-updated";
-
 const GLOD_MSG = "Contactar con Glod para Revisar el Problema";
-
-type StoredShape = { items: InventoryRow[]; savedAt?: string };
-
-type CacheSnapshot = { items: InventoryRow[]; savedAt: string | null };
-
-const serverEmpty: CacheSnapshot = { items: [], savedAt: null };
-
-let lastRawKey = "\u0000";
-let lastSnapshot: CacheSnapshot = serverEmpty;
-
-/** Misma referencia si el contenido de localStorage no cambió (evita bucles con useSyncExternalStore). */
-function getClientSnapshot(): CacheSnapshot {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY) ?? "";
-    if (raw === lastRawKey) return lastSnapshot;
-    lastRawKey = raw;
-    if (!raw) {
-      lastSnapshot = { items: [], savedAt: null };
-      return lastSnapshot;
-    }
-    const parsed = JSON.parse(raw) as StoredShape;
-    if (parsed && Array.isArray(parsed.items)) {
-      lastSnapshot = { items: parsed.items, savedAt: parsed.savedAt ?? null };
-    } else {
-      lastSnapshot = { items: [], savedAt: null };
-    }
-    return lastSnapshot;
-  } catch {
-    localStorage.removeItem(STORAGE_KEY);
-    lastRawKey = "";
-    lastSnapshot = { items: [], savedAt: null };
-    return lastSnapshot;
-  }
-}
-
-function notifyCache() {
-  window.dispatchEvent(new Event(CACHE_EVENT));
-}
-
-function saveToStorage(items: InventoryRow[]) {
-  const payload: StoredShape = {
-    items,
-    savedAt: new Date().toISOString(),
-  };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  notifyCache();
-}
-
-function clearStorageCache() {
-  localStorage.removeItem(STORAGE_KEY);
-  notifyCache();
-}
-
-function subscribe(onStoreChange: () => void) {
-  const fn = () => onStoreChange();
-  window.addEventListener(CACHE_EVENT, fn);
-  window.addEventListener("storage", fn);
-  return () => {
-    window.removeEventListener(CACHE_EVENT, fn);
-    window.removeEventListener("storage", fn);
-  };
-}
-
-function getServerSnapshot(): CacheSnapshot {
-  return serverEmpty;
-}
 
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -84,33 +15,98 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 export default function Home() {
-  const { items, savedAt: lastOkAt } = useSyncExternalStore(
-    subscribe,
-    getClientSnapshot,
-    getServerSnapshot
-  );
-
+  const [items, setItems] = useState<InventoryRow[]>([]);
+  const [lastOkAt, setLastOkAt] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
+  const [bootLoading, setBootLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
   const [copyHint, setCopyHint] = useState<string | null>(null);
+  const [serverHint, setServerHint] = useState<string | null>(null);
+
+  /** Carga desde Vercel Blob vía GET /api/inventario (sin refresh). */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setBootLoading(true);
+      setApiError(null);
+      try {
+        const res = await fetch("/api/inventario", { cache: "no-store" });
+        let data: {
+          items?: InventoryRow[];
+          savedAt?: string | null;
+          error?: string;
+          message?: string;
+        };
+        try {
+          data = (await res.json()) as {
+            items?: InventoryRow[];
+            savedAt?: string | null;
+            error?: string;
+            message?: string;
+          };
+        } catch {
+          if (!cancelled) {
+            setApiError("Respuesta inválida (no JSON).");
+          }
+          return;
+        }
+        if (cancelled) return;
+        if (!res.ok) {
+          setApiError(data.error || `Error HTTP ${res.status}`);
+          return;
+        }
+        if (data.items && Array.isArray(data.items) && data.items.length > 0) {
+          setItems(data.items);
+          setLastOkAt(data.savedAt ?? null);
+        }
+        if (data.message) {
+          setServerHint(data.message);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          const detail = e instanceof Error ? e.message : String(e);
+          setApiError(`Fallo al cargar datos: ${detail}`);
+        }
+      } finally {
+        if (!cancelled) setBootLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setApiError(null);
+    setServerHint(null);
+    setCopyHint(null);
     try {
-      const res = await fetch("/api/inventario", { cache: "no-store" });
-      let data: { items?: InventoryRow[]; error?: string };
+      const res = await fetch("/api/inventario?refresh=1", { cache: "no-store" });
+      let data: {
+        items?: InventoryRow[];
+        savedAt?: string | null;
+        error?: string;
+        warning?: string;
+        hint?: string;
+      };
       try {
-        data = (await res.json()) as { items?: InventoryRow[]; error?: string };
+        data = (await res.json()) as {
+          items?: InventoryRow[];
+          savedAt?: string | null;
+          error?: string;
+          warning?: string;
+          hint?: string;
+        };
       } catch {
-        setApiError("Respuesta inválida (no JSON). Revise en Vercel que la función no haya cortado por tiempo.");
+        setApiError("Respuesta inválida (no JSON).");
         return;
       }
       if (!res.ok) {
         setApiError(
           data.error ||
-            `Error HTTP ${res.status}. Compruebe variables de entorno en Vercel (usuario, contraseña, INVENTORY_TLS_INSECURE=1).`
+            `Error HTTP ${res.status}. Compruebe variables de entorno en Vercel.`
         );
         return;
       }
@@ -118,23 +114,17 @@ export default function Home() {
         setApiError("Respuesta inválida del servidor");
         return;
       }
-      try {
-        saveToStorage(data.items);
-      } catch (storeErr) {
-        const name =
-          storeErr instanceof DOMException ? storeErr.name : "Error";
-        const detail =
-          storeErr instanceof Error ? storeErr.message : String(storeErr);
-        setApiError(
-          `Los datos llegaron del servidor pero no se pudieron guardar en el navegador (${name}: ${detail}). Suele ser caché llena: borre datos de este sitio o use otro navegador.`
-        );
-        return;
+      setItems(data.items);
+      setLastOkAt(data.savedAt ?? null);
+      if (data.warning) {
+        setServerHint(`Aviso: ${data.warning}`);
+      } else if (data.hint) {
+        setServerHint(data.hint);
       }
-      setApiError(null);
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       setApiError(
-        `Fallo al llamar a /api/inventario: ${detail}. Si Postman funciona, revise timeout en Vercel, extensiones del navegador o la consola (F12) → pestaña Red.`
+        `Fallo al llamar a /api/inventario: ${detail}. Revise la pestaña Red (F12).`
       );
     } finally {
       setLoading(false);
@@ -180,8 +170,10 @@ export default function Home() {
       <header className="head">
         <h1>Inventario — saldos bodega</h1>
         <p className="muted">
-          Datos en este equipo (local). Use &quot;Actualizar información&quot; para
-          volver a descargar desde el servidor.
+          Los datos completos se guardan en <strong>Vercel Blob</strong> (servidor). Esta
+          página solo mantiene una copia en memoria para buscar y copiar. Pulse{" "}
+          <strong>Actualizar información</strong> para volver a descargar desde el API y
+          actualizar el almacenamiento.
         </p>
       </header>
 
@@ -192,21 +184,28 @@ export default function Home() {
         </div>
       ) : null}
 
+      {serverHint && !apiError ? (
+        <p className="muted small" style={{ marginBottom: "0.75rem" }}>
+          {serverHint}
+        </p>
+      ) : null}
+
       <section className="toolbar">
         <button
           type="button"
           className="btn primary"
           onClick={() => void refresh()}
-          disabled={loading}
+          disabled={loading || bootLoading}
         >
-          {loading ? "Actualizando…" : "Actualizar información"}
+          {loading || bootLoading ? "Cargando…" : "Actualizar información"}
         </button>
         {lastOkAt ? (
           <span className="muted small">
-            Última carga correcta: {new Date(lastOkAt).toLocaleString("es-EC")}
+            Última actualización guardada en servidor:{" "}
+            {new Date(lastOkAt).toLocaleString("es-EC")}
           </span>
         ) : (
-          <span className="muted small">Sin datos guardados aún.</span>
+          <span className="muted small">Sin datos en servidor aún.</span>
         )}
       </section>
 
@@ -225,8 +224,8 @@ export default function Home() {
         </div>
         <p className="muted small">
           {items.length > 0
-            ? `${items.length} registros en caché.`
-            : "No hay caché: pulse Actualizar información."}
+            ? `${items.length} registros en memoria (según última carga).`
+            : "Sin registros: pulse Actualizar información o espere la carga inicial."}
         </p>
       </section>
 
